@@ -1,0 +1,15 @@
+python main.py \
+    --root_dir ./flickr30k/flickr30k_images \
+    --annotations_file ./flickr30k/results.csv \
+    --epochs 100 \
+    --batch_size 8 \
+    --learning_rate 5e-5 \
+    --logging_steps 1 \
+    --save_steps 1000 \
+    --save_epochs 1 \
+    --save_total_limit 3 \
+    --logging_steps 10 \
+    --eval_steps 1000 \
+    --output_dir ./results/main \
+    --fp16 \
+    --log_dir ./runs
