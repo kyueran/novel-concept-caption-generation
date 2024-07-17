@@ -175,7 +175,7 @@ def get_processed_images(csv_path):
             return set(df['image_name'])
     return set()
 
-def generate_captions_for_images(npy_file_path, output_csv_path, batch_size=64):
+def generate_captions_for_images(npy_file_path, output_csv_path, batch_size=32):
     while True:
         data = np.load(npy_file_path, allow_pickle=True)
         image_features_list = data['features']
