@@ -1,23 +1,35 @@
-import torch.backends.cudnn as cudnn
-import torch.optim
-import torch.utils.data
-from datasets import *
-from utils import *
-from nltk.translate.bleu_score import corpus_bleu
-import torch.nn.functional as F
-from tqdm import tqdm
-import json
 import os
-import h5py
+import json
+import numpy as np
+import pandas as pd
+import torch
+import torch.backends.cudnn as cudnn
+import torch.nn.functional as F
+import spacy
+from sklearn.cluster import KMeans
+from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import logging
+import multiprocessing
+import warnings
+
+# Ignore all warnings
+warnings.filterwarnings("ignore")
+
+# Setup logging to log to both console and file
+log_file = 'caption_generation.log'
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler(log_file), logging.StreamHandler()])
+logger = logging.getLogger()
 
 # Parameters
-data_folder = 'final_dataset'  # folder with data files saved by create_input_files.py
-data_name = 'coco_5_cap_per_img_5_min_word_freq'  # base name shared by data files
-checkpoint_file = 'BEST_34checkpoint_coco_5_cap_per_img_5_min_word_freq.pth.tar'  # model checkpoint
+data_folder = 'final_dataset'
+data_name = 'coco_5_cap_per_img_5_min_word_freq'
+checkpoint_file = 'BEST_34checkpoint_coco_5_cap_per_img_5_min_word_freq.pth.tar'
 
-word_map_file = 'WORDMAP_coco_5_cap_per_img_5_min_word_freq.json'  # word map, ensure it's the same the data was encoded with and the model was trained with
-device = torch.device("cpu")  # sets device to CPU
-cudnn.benchmark = True  # set to true only if inputs to model are fixed size; otherwise lot of computational overhead
+word_map_file = 'WORDMAP.json'
+device = torch.device("cpu")
+cudnn.benchmark = True
 
 # Load model
 torch.nn.Module.dump_patches = True
@@ -27,11 +39,13 @@ decoder = decoder.to(device)
 decoder.eval()
 
 # Load word map (word2ix)
-word_map_file = os.path.join(data_folder, 'WORDMAP_' + data_name + '.json')
+word_map_file = os.path.join(data_folder, word_map_file)
 with open(word_map_file, 'r') as j:
     word_map = json.load(j)
 rev_word_map = {v: k for k, v in word_map.items()}
 vocab_size = len(word_map)
+
+nlp = spacy.load("en_core_web_sm")
 
 def generate_caption(image_features, beam_size=5):
     """
@@ -132,19 +146,56 @@ def generate_caption(image_features, beam_size=5):
     hypothesis = ' '.join(hypothesis)
     return hypothesis
 
+def process_image(image_features, image_name):
+    results = []
+    # Ensure the decoder runs on CPU
+    decoder.to("cpu")
+    image_features = torch.FloatTensor(image_features).unsqueeze(0).to("cpu")
+    caption = generate_caption(image_features)
+    results.append({"image_name": image_name, "comment_number": 0, "comment": caption + "."})
+    return results
+
+def get_processed_images(csv_path):
+    if os.path.exists(csv_path):
+        df = pd.read_csv(csv_path, sep='|')
+        if not df.empty:
+            return set(df['image_name'])
+    return set()
+
+def generate_captions_for_images(npy_file_path, output_csv_path, batch_size=100):
+    data = np.load(npy_file_path, allow_pickle=True)
+    image_features_list = data['features']
+    image_names = data['names']
+
+    processed_images = get_processed_images(output_csv_path)
+    start_index = 0
+    while start_index < len(image_names) and image_names[start_index] in processed_images:
+        start_index += 1
+
+    logger.info(f"Starting from index: {start_index}")
+
+    if not os.path.exists(output_csv_path):
+        pd.DataFrame(columns=["image_name", "comment_number", "comment"]).to_csv(output_csv_path, index=False, sep='|')
+
+    with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        futures = []
+        for i in range(start_index, len(image_features_list), batch_size):
+            batch_futures = [executor.submit(process_image, image_features_list[j], image_names[j]) for j in range(i, min(i + batch_size, len(image_features_list)))]
+            for future in tqdm(as_completed(batch_futures), total=len(batch_futures)):
+                try:
+                    batch_results = future.result()
+                    df_batch = pd.DataFrame(batch_results)
+                    df_batch.to_csv(output_csv_path, mode='a', header=False, index=False, sep='|')
+                    logger.info(f"Processed up to image: {batch_results[-1]['image_name']}")
+                except Exception as e:
+                    logger.error(f"Error processing batch: {e}")
+
 if __name__ == '__main__':
-    # Load image features from the first entry in the HDF5 file
-    '''
-    h5_file_path = os.path.join(data_folder, 'val36.hdf5')  # Assuming validation set
-    with h5py.File(h5_file_path, 'r') as h:
-        image_features = torch.FloatTensor(h['image_features'][0])  # Load the first image's features
-    '''
+    # Set multiprocessing start method to 'spawn'
+    multiprocessing.set_start_method('spawn')
 
-    npy_file_path = '../roi_features.npy'  # Path to the numpy file
-    image_features = torch.FloatTensor(np.load(npy_file_path))
-    # Reshape image_features to match the expected input shape
-    image_features = image_features.unsqueeze(0)  # Add batch dimension
+    npy_file_path = '../shared_data/flickr30k_name_features.npy'
+    output_csv_path = '../shared_data/output_captions_simple.csv'
 
-    # Generate caption
-    caption = generate_caption(image_features, beam_size=5)
-    print("Generated Caption:", caption)
+    generate_captions_for_images(npy_file_path, output_csv_path)
+
