@@ -12,7 +12,6 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import logging
 import multiprocessing
 import warnings
-import time
 
 # Ignore all warnings
 warnings.filterwarnings("ignore")
@@ -48,7 +47,7 @@ vocab_size = len(word_map)
 
 nlp = spacy.load("en_core_web_sm")
 
-def generate_caption(image_features, beam_size=10, length_penalty=1.2, n_clusters=2):
+def generate_caption(image_features, beam_size=10, length_penalty=1.2, diversity_penalty=1, n_clusters=2):
     k = beam_size
 
     # Cluster image features
@@ -84,6 +83,12 @@ def generate_caption(image_features, beam_size=10, length_penalty=1.2, n_cluster
             scores = F.log_softmax(scores, dim=1).to(device)
             scores = top_k_scores.expand_as(scores) + scores
             scores = scores / (step ** length_penalty)
+
+            if step > 1:
+                for i in range(scores.size(0)):
+                    for j in range(scores.size(1)):
+                        if j in seqs[i]:
+                            scores[i, j] -= diversity_penalty
 
             # Penalize <unk> token
             unk_token_index = word_map['<unk>']
@@ -185,27 +190,24 @@ def generate_captions_for_images(npy_file_path, output_csv_path, batch_size=64):
         if not os.path.exists(output_csv_path):
             pd.DataFrame(columns=["image_name", "comment_number", "comment"]).to_csv(output_csv_path, index=False, sep='|')
 
-        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
-            futures = []
+        with ProcessPoolExecutor(max_workers=batch_size) as executor:
             for i in range(start_index, len(image_features_list), batch_size):
-                batch_futures = [executor.submit(process_image, image_features_list[j], image_names[j]) for j in range(i, min(i + batch_size, len(image_features_list)))]
+                batch_futures = {executor.submit(process_image, image_features_list[j], image_names[j]): j for j in range(i, min(i + batch_size, len(image_features_list)))}
                 for future in tqdm(as_completed(batch_futures), total=len(batch_futures)):
                     try:
                         batch_results = future.result()
                         df_batch = pd.DataFrame(batch_results)
                         df_batch.to_csv(output_csv_path, mode='a', header=False, index=False, sep='|')
                     except Exception as e:
-                        logger.error(f"Error processing batch: {e}")
+                        logger.error(f"Error processing image {image_names[batch_futures[future]]}: {e}")
 
         # Check if all images have been processed
         processed_images = get_processed_images(output_csv_path)
         if len(processed_images) == len(image_names):
-            logger.info("All images processed. Exiting.")
+            logger.info("All images processed. Exiting loop.")
             break
 
-        # Wait before checking for new images
-        logger.info("Waiting for new images...")
-        time.sleep(60)
+        logger.info("There are still images that are not captioned. Continuing my quest...")
 
 if __name__ == '__main__':
     # Set multiprocessing start method to 'spawn'
