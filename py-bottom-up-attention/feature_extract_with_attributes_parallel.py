@@ -131,7 +131,7 @@ def save_data_incrementally(output_npy_path, image_features_list, image_names):
                                 dtype=[('features', 'O'), ('names', 'O')])
     np.save(output_npy_path, structured_array)
 
-def process_images(image_folder, output_npy_path, output_image_folder, batch_size=64):
+def process_images(image_folder, output_npy_path, output_image_folder, batch_size=32):
     image_paths = [os.path.join(image_folder, fname) for fname in os.listdir(image_folder) if fname.endswith(('.jpg', '.png', '.jpeg'))]
 
     if not os.path.exists(output_image_folder):
@@ -145,7 +145,7 @@ def process_images(image_folder, output_npy_path, output_image_folder, batch_siz
 
     for i in range(0, len(image_paths), batch_size):
         batch_paths = image_paths[i:i+batch_size]
-        with ProcessPoolExecutor(max_workers=os.cpu_count()) as executor:
+        with ProcessPoolExecutor(max_workers=batch_size) as executor:
             futures = {executor.submit(process_image, image_path, output_image_folder): image_path for image_path in batch_paths if os.path.basename(image_path) not in processed_images}
             for future in tqdm(as_completed(futures), total=len(futures)):
                 try:
