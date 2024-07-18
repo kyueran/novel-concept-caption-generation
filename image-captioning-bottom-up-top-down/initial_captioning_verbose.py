@@ -178,6 +178,7 @@ def get_processed_images(csv_path):
 def process_batch(image_features_list, image_names, start_index, batch_size, output_csv_path):
     while True:
         try:
+            logger.info(f"Processing batch starting at index {start_index}")
             with ProcessPoolExecutor(max_workers=batch_size) as executor:
                 futures = {executor.submit(process_image, image_features_list[j], image_names[j]): j for j in range(start_index, min(start_index + batch_size, len(image_features_list)))}
                 
@@ -189,11 +190,12 @@ def process_batch(image_features_list, image_names, start_index, batch_size, out
                     future.result()  # This will re-raise the exception if one was caught
                 
                 # Process remaining futures if no exception occurred
-                for future in as_completed(futures):
+                for future in tqdm(as_completed(futures), total=len(futures), desc="Processing batch"):
                     batch_results = future.result()
                     df_batch = pd.DataFrame(batch_results)
                     df_batch.to_csv(output_csv_path, mode='a', header=False, index=False, sep='|')
-
+            
+            logger.info(f"Batch starting at index {start_index} processed successfully")
             break  # Exit the loop if batch processing is successful
 
         except Exception as e:
@@ -201,7 +203,7 @@ def process_batch(image_features_list, image_names, start_index, batch_size, out
             # If an error occurs, shut down all running tasks and retry the batch
             continue
 
-def generate_captions_for_images(npy_file_path, output_csv_path, batch_size=8):
+def generate_captions_for_images(npy_file_path, output_csv_path, batch_size=32):
     # Load the data initially
     data = np.load(npy_file_path, allow_pickle=True)
     image_features_list = data['features']
