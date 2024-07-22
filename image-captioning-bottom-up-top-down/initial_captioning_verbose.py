@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import spacy
 from sklearn.cluster import KMeans
 from tqdm import tqdm
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_EXCEPTION
 import logging
 import multiprocessing
 import warnings
@@ -175,12 +175,42 @@ def get_processed_images(csv_path):
             return set(df['image_name'])
     return set()
 
-def generate_captions_for_images(npy_file_path, output_csv_path, batch_size=32):
+def process_batch(image_features_list, image_names, start_index, batch_size, output_csv_path):
     while True:
-        data = np.load(npy_file_path, allow_pickle=True)
-        image_features_list = data['features']
-        image_names = data['names']
+        try:
+            logger.info(f"Processing batch starting at index {start_index}")
+            with ProcessPoolExecutor(max_workers=batch_size) as executor:
+                futures = {executor.submit(process_image, image_features_list[j], image_names[j]): j for j in range(start_index, min(start_index + batch_size, len(image_features_list)))}
+                
+                # Wait for the first exception to occur
+                done, not_done = wait(futures.keys(), return_when=FIRST_EXCEPTION)
+                
+                # Re-raise any exception that was caught
+                for future in done:
+                    future.result()  # This will re-raise the exception if one was caught
+                
+                # Process remaining futures if no exception occurred
+                for future in tqdm(as_completed(futures), total=len(futures), desc="Processing batch"):
+                    batch_results = future.result()
+                    df_batch = pd.DataFrame(batch_results)
+                    df_batch.to_csv(output_csv_path, mode='a', header=False, index=False, sep='|')
+            
+            logger.info(f"Batch starting at index {start_index} processed successfully")
+            break  # Exit the loop if batch processing is successful
 
+        except Exception as e:
+            logger.error(f"Batch processing failed at index {start_index}. Retrying batch. Error: {e}")
+            # If an error occurs, shut down all running tasks and retry the batch
+            continue
+
+def generate_captions_for_images(npy_file_path, output_csv_path, batch_size=32):
+    # Load the data initially
+    data = np.load(npy_file_path, allow_pickle=True)
+    image_features_list = data['features']
+    image_names = data['names']
+
+    while True:
+        # Get the list of already processed images
         processed_images = get_processed_images(output_csv_path)
         start_index = 0
         while start_index < len(image_names) and image_names[start_index] in processed_images:
@@ -190,24 +220,29 @@ def generate_captions_for_images(npy_file_path, output_csv_path, batch_size=32):
         if not os.path.exists(output_csv_path):
             pd.DataFrame(columns=["image_name", "comment_number", "comment"]).to_csv(output_csv_path, index=False, sep='|')
 
-        with ProcessPoolExecutor(max_workers=batch_size) as executor:
-            for i in range(start_index, len(image_features_list), batch_size):
-                batch_futures = {executor.submit(process_image, image_features_list[j], image_names[j]): j for j in range(i, min(i + batch_size, len(image_features_list)))}
-                for future in tqdm(as_completed(batch_futures), total=len(batch_futures)):
-                    try:
-                        batch_results = future.result()
-                        df_batch = pd.DataFrame(batch_results)
-                        df_batch.to_csv(output_csv_path, mode='a', header=False, index=False, sep='|')
-                    except Exception as e:
-                        logger.error(f"Error processing image {image_names[batch_futures[future]]}: {e}")
+        i = start_index
+        while i < len(image_features_list):
+            process_batch(image_features_list, image_names, i, batch_size, output_csv_path)
+            i += batch_size
 
-        # Check if all images have been processed
-        processed_images = get_processed_images(output_csv_path)
-        if len(processed_images) == len(image_names):
-            logger.info("All images processed. Exiting loop.")
-            break
+        # Re-load the data to check for new entries
+        new_data = np.load(npy_file_path, allow_pickle=True)
+        new_image_features_list = new_data['features']
+        new_image_names = new_data['names']
 
-        logger.info("There are still images that are not captioned. Continuing my quest...")
+        # If there are new entries, update the lists and continue processing
+        if len(new_image_names) != len(image_names):
+            logger.info("New entries detected in the data. Updating lists.")
+            image_features_list = new_image_features_list
+            image_names = new_image_names
+        else:
+            # If there are no new entries, check if all images have been processed
+            processed_images = get_processed_images(output_csv_path)
+            if len(processed_images) == len(image_names):
+                logger.info("All images processed. Exiting loop.")
+                break
+            else:
+                logger.info("There are still images that are not captioned. Continuing my quest...")
 
 if __name__ == '__main__':
     # Set multiprocessing start method to 'spawn'
