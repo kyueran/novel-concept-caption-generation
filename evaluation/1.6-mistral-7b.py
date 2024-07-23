@@ -23,6 +23,8 @@ quantization_config = BitsAndBytesConfig(
 image_model_id = "llava-hf/llava-v1.6-mistral-7b-hf"
 pipe_image_to_text = pipeline("image-to-text", model=image_model_id, model_kwargs={"quantization_config": quantization_config})
 
+summarizer = pipeline("summarization", model="t5-small", tokenizer="t5-small")
+
 # Function to convert image to text using the Llava model
 def convert_image_to_text(image, pipe):
     prompt = "USER: <image>\nPlease describe this image.\nASSISTANT:"
@@ -38,8 +40,9 @@ def convert_image_to_text(image, pipe):
 def extract_objects_features(text):
     doc = nlp(text)
     objects_features = set()
-    for chunk in doc.noun_chunks:
-        objects_features.add(chunk.lemma_.lower())
+    for token in doc:
+        if token.pos_ in {'NOUN'}:
+            objects_features.add(token.lemma_.lower())
     return objects_features
 
 # Create a dictionary of synonyms
@@ -75,16 +78,19 @@ def calculate_precision_recall_f1(set1, set2, matched_objects):
 
     return precision, recall, f1
 
-# Example usage for image-to-text conversion
-generated_caption = convert_image_to_text(image, pipe_image_to_text)
-print("Generated Caption:", generated_caption)
+def summarize(caption):
+    summary = summarizer(caption, max_length=50, do_sample=False)
+    summarized = summary[0]['summary_text']
+    return summarized
 
-# Your existing caption
-existing_caption = "This image shows a dock to a lake with mountains and trees in the background."
+generated_caption = convert_image_to_text(image, pipe_image_to_text)
+student_caption = "This image shows a dock to a lake with mountains and trees in the background."
+teacher_caption = summarize(generated_caption)
+print(teacher_caption)
 
 # Extract objects and features from both captions
-objects_features_generated = extract_objects_features(generated_caption)
-objects_features_existing = extract_objects_features(existing_caption)
+objects_features_generated = extract_objects_features(teacher_caption)
+objects_features_existing = extract_objects_features(student_caption)
 
 # Create synonym dictionaries
 synonym_dict_generated = create_synonym_dict(objects_features_generated)
@@ -96,6 +102,10 @@ print()
 # Match objects/features with synonyms
 matched_objects_from_existing = match_with_synonyms(objects_features_existing, synonym_dict_generated)
 matched_objects_from_generated = match_with_synonyms(objects_features_generated, synonym_dict_existing)
+print()
+print("MATCHED EXISTING", matched_objects_from_existing)
+print()
+print("MATHCED GENERATED", matched_objects_from_generated)
 
 # Calculate precision, recall, and F1 Score for objects and features
 precision, recall, f1 = calculate_precision_recall_f1(objects_features_existing, objects_features_generated, matched_objects_from_existing)
@@ -105,13 +115,16 @@ print(f"Precision: {precision}, Recall: {recall}, F1 Score for Objects and Featu
 model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
 
 # Encode the captions
-embeddings_generated = model.encode(generated_caption, convert_to_tensor=True)
-embeddings_existing = model.encode(existing_caption, convert_to_tensor=True)
-
+embeddings_teacher = model.encode(teacher_caption, convert_to_tensor=True)
+embeddings_student = model.encode(student_caption, convert_to_tensor=True)
+embeddings_unsummarized = model.encode(generated_caption, convert_to_tensor=True)
 # Calculate cosine similarity
-similarity_score = util.pytorch_cos_sim(embeddings_generated, embeddings_existing).item()
-print(f"Semantic Similarity Score: {similarity_score}")
+similarity_score1 = util.pytorch_cos_sim(embeddings_student, embeddings_teacher).item()
+similarity_score2 = util.pytorch_cos_sim(embeddings_teacher, embeddings_student).item()
+similarity_score3 = util.pytorch_cos_sim(embeddings_student, embeddings_unsummarized).item()
+
+print(f"Semantic Similarity Score: {similarity_score1}, {similarity_score2}, {similarity_score3}")
 
 # Combine F1 score and Semantic Similarity score
-final_score = f1 + similarity_score
+final_score = f1 + similarity_score1
 print(f"Final Similarity Score: {final_score}")
