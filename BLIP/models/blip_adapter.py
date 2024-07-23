@@ -165,15 +165,18 @@ class BLIP_Decoder(nn.Module):
         # Compute KL divergence loss
         kl_loss = self.compute_kl_loss(student_caption, teacher_caption)
         
-        # Total loss
-        loss = (torch.exp(-self.log_vars[0]) * loss_lm + self.log_vars[0] + 
-                torch.exp(-self.log_vars[1]) * semantic_similarity_loss + self.log_vars[1] + 
-                torch.exp(-self.log_vars[2]) * f1_score_loss + self.log_vars[2] +
-                torch.exp(-self.log_vars[3]) * kl_loss + self.log_vars[3])
+        loss_lm_weighted = 0.5 * torch.exp(-self.log_vars[0]) * loss_lm + 0.5 * self.log_vars[0]
+        semantic_similarity_loss_weighted = 0.5 * torch.exp(-self.log_vars[1]) * semantic_similarity_loss + 0.5 * self.log_vars[1]
+        f1_score_loss_weighted = 0.5 * torch.exp(-self.log_vars[2]) * f1_score_loss + 0.5 * self.log_vars[2]
+        kl_loss_weighted = 0.5 * torch.exp(-self.log_vars[3]) * kl_loss + 0.5 * self.log_vars[3]
+
+        # Total loss with weighted components
+        total_loss = loss_lm_weighted + semantic_similarity_loss_weighted + f1_score_loss_weighted + kl_loss_weighted
         
+        # Regularization term to prevent log_vars from growing too large
         reg_loss = 0.01 * torch.sum(self.log_vars ** 2)
         
-        total_loss = loss + reg_loss
+        total_loss = total_loss + reg_loss
         
         return total_loss
     
@@ -191,7 +194,8 @@ class BLIP_Decoder(nn.Module):
         student_embeddings = self.semantic_model.encode(student_caption, convert_to_tensor=True)
         teacher_embeddings = self.semantic_model.encode(teacher_caption, convert_to_tensor=True)
 
-        return util.pytorch_cos_sim(student_embeddings, teacher_embeddings).item()
+        semantic_similarity_loss = 1 - util.pytorch_cos_sim(student_embeddings, teacher_embeddings).item()
+        return semantic_similarity_loss
     
     def summarize(self, caption):
         summary = self.summarizer(caption, max_length=50, do_sample=False)
