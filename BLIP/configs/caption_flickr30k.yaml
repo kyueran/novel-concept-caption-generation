@@ -9,7 +9,7 @@ pretrained: 'https://storage.googleapis.com/sfr-vision-language-research/BLIP/mo
 vit: 'base'
 vit_grad_ckpt: False
 vit_ckpt_layer: 0
-batch_size: 1
+batch_size: 16
 init_lr: 1e-5
 
 # vit: 'large'
@@ -29,5 +29,5 @@ prompt: 'a picture of '
 # optimizer
 weight_decay: 0.05
 min_lr: 0
-max_epoch: 5
+max_epoch: 1000
 

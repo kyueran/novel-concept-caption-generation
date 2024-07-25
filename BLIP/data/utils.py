@@ -110,3 +110,43 @@ def coco_caption_eval(coco_gt_root, results_file, split):
         print(f'{metric}: {score:.3f}')
     
     return coco_eval
+
+def flickr30k_caption_eval(flickr30k_gt_root, results_file, split):
+    filenames = {
+        'val': 'f30k_human_rand100_val_gt.json',
+        'test': 'f30k_human_rand100_test_gt.json'
+    }    
+    
+    annotation_file = os.path.join(flickr30k_gt_root, filenames[split])
+    
+    # create coco object and coco_result object
+    coco = COCO(annotation_file)
+
+    gt_img_ids = set(coco.getImgIds())
+
+    # Load results file
+    with open(results_file, 'r') as f:
+        results_data = json.load(f)
+    
+    # Extract image IDs from results
+    res_img_ids = set([item['image_id'] for item in results_data])
+    
+    # Check if image IDs match
+    if not res_img_ids.issubset(gt_img_ids):
+        missing_ids = res_img_ids - gt_img_ids
+        raise ValueError(f'The following image IDs in the results file are missing in the ground truth: {missing_ids}')
+    
+    coco_result = coco.loadRes(results_file)
+
+    # create coco_eval object by taking coco and coco_result
+    coco_eval = COCOEvalCap(coco, coco_result)
+
+    # evaluate results
+    # SPICE will take a few minutes the first time, but speeds up due to caching
+    coco_eval.evaluate()
+
+    # print output evaluation scores
+    for metric, score in coco_eval.eval.items():
+        print(f'{metric}: {score:.3f}')
+    
+    return coco_eval

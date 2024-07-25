@@ -42,8 +42,8 @@ def generate_captions(checkpoint_dir, root_dir, annotations_file, log_file, batc
             unique_pixel_values = torch.stack(unique_pixel_values)
 
             # Generate captions
-            #outputs = model.generate(pixel_values=unique_pixel_values, max_length=200, num_beams=10, early_stopping=True)
-            outputs = model.generate(pixel_values=unique_pixel_values, num_beams=10, length_penalty=2, repetition_penalty=2.0, min_length=200, max_length=300)
+            outputs = model.generate(pixel_values=unique_pixel_values, repetition_penalty=3.0, max_length=200, num_beams=10, early_stopping=True)
+            #outputs = model.generate(pixel_values=unique_pixel_values, num_beams=10, length_penalty=2, repetition_penalty=2.0, min_length=200, max_length=300)
 
             decoded_outputs = processor.batch_decode(outputs, skip_special_tokens=True)
 
@@ -57,7 +57,7 @@ def generate_captions(checkpoint_dir, root_dir, annotations_file, log_file, batc
     return captions
 
 if __name__ == "__main__":
-    checkpoint_path = "./checkpoint_dir/checkpoint-step-1800"
+    checkpoint_path = "./checkpoint_dir/checkpoint-epoch-3"
     root_dir = "./flickr30k/flickr30k_images"
     annotations_file = "./flickr30k/results.csv"
     log_file = "./captions.log"
