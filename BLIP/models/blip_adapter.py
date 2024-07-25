@@ -10,7 +10,8 @@ warnings.filterwarnings("ignore")
 
 from models.vit import VisionTransformer, interpolate_pos_embed
 from models.med import BertConfig, BertModel, BertLMHeadModel
-from transformers import BertTokenizer, AdapterConfig, BitsAndBytesConfig, pipeline
+from transformers import BertTokenizer, BitsAndBytesConfig, pipeline
+from adapters import AdapterConfig
 from sentence_transformers import SentenceTransformer, util
 
 import torch
@@ -127,8 +128,6 @@ class BLIP_Decoder(nn.Module):
         adapter_config = AdapterConfig.load("pfeiffer")
         self.text_decoder.add_adapter("student_adapter", config=adapter_config)
         self.text_decoder.train_adapter("student_adapter")
-
-        self.log_vars = nn.Parameter(torch.zeros(4))
   
     def forward(self, image, caption):
         
@@ -149,35 +148,22 @@ class BLIP_Decoder(nn.Module):
                                            labels = decoder_targets,
                                            return_dict = True,   
                                           )   
-        loss_lm = decoder_output.loss
+        
 
         teacher_caption = self.convert_image_to_text(image)
         
-        # Generate caption from current model
         student_caption = self.generate(image)
         
-        # Compute semantic similarity
+        loss_lm = decoder_output.loss
+
         semantic_similarity_loss = self.compute_semantic_similarity_loss(student_caption, teacher_caption)
         
-        # Compute F1 score for object matches
         f1_score_loss = self.compute_f1_score_loss(student_caption, teacher_caption)
         
-        # Compute KL divergence loss
         kl_loss = self.compute_kl_loss(student_caption, teacher_caption)
         
-        loss_lm_weighted = 0.5 * torch.exp(-self.log_vars[0]) * loss_lm + 0.5 * self.log_vars[0]
-        semantic_similarity_loss_weighted = 0.5 * torch.exp(-self.log_vars[1]) * semantic_similarity_loss + 0.5 * self.log_vars[1]
-        f1_score_loss_weighted = 0.5 * torch.exp(-self.log_vars[2]) * f1_score_loss + 0.5 * self.log_vars[2]
-        kl_loss_weighted = 0.5 * torch.exp(-self.log_vars[3]) * kl_loss + 0.5 * self.log_vars[3]
-
-        # Total loss with weighted components
-        total_loss = loss_lm_weighted + semantic_similarity_loss_weighted + f1_score_loss_weighted + kl_loss_weighted
-        
-        # Regularization term to prevent log_vars from growing too large
-        reg_loss = 0.01 * torch.sum(self.log_vars ** 2)
-        
-        total_loss = total_loss + reg_loss
-        
+        total_loss = loss_lm + semantic_similarity_loss + f1_score_loss + kl_loss
+                        
         return total_loss
     
     def convert_image_to_text(self, image):
@@ -252,6 +238,29 @@ class BLIP_Decoder(nn.Module):
         _, _, f1_score = self.calculate_precision_recall_f1(objects_features_student, objects_features_teacher, matched_objects)
         f1_score_loss = 1 - f1_score  # Loss should decrease as F1 score increases
         return f1_score_loss
+
+    def compute_kl_loss(self, student_caption, teacher_caption):
+        # Tokenize the captions using the shared tokenizer
+        student_ids = self.tokenizer(student_caption, return_tensors="pt", padding=True, truncation=True).input_ids
+        teacher_ids = self.tokenizer(teacher_caption, return_tensors="pt", padding=True, truncation=True).input_ids
+        
+        # Move token ids to the appropriate device
+        student_ids = student_ids.to(self.device)
+        teacher_ids = teacher_ids.to(self.device)
+
+        # Compute the logits (probability distributions) from the decoder
+        student_logits = self.text_decoder(student_ids).logits
+        teacher_logits = self.text_decoder(teacher_ids).logits
+
+        # Convert logits to log-probabilities
+        student_log_probs = F.log_softmax(student_logits, dim=-1)
+        teacher_probs = F.softmax(teacher_logits, dim=-1)
+
+        # Compute the KL divergence
+        kl_loss_fn = nn.KLDivLoss(reduction='batchmean')
+        kl_loss = kl_loss_fn(student_log_probs, teacher_probs)
+
+        return kl_loss
 
     def generate(self, image, sample=False, num_beams=3, max_length=30, min_length=10, top_p=0.9, repetition_penalty=1.0):
         image_embeds = self.visual_encoder(image)
