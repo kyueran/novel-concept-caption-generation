@@ -17,6 +17,8 @@ from sentence_transformers import SentenceTransformer, util
 import torch
 from torch import nn
 import torch.nn.functional as F
+import torch.nn.init as init
+import math
 
 import os
 from urllib.parse import urlparse
@@ -25,7 +27,7 @@ import spacy
 from nltk.corpus import wordnet as wn
 
 nlp = spacy.load("en_core_web_sm")
-
+    
 class BLIP_Base(nn.Module):
     def __init__(self,                 
                  med_config = 'configs/med_config.json',  
@@ -79,7 +81,47 @@ class BLIP_Base(nn.Module):
                                       )              
             return output.last_hidden_state
         
-        
+
+class Adapter(nn.Module):
+    def __init__(self, input_dim, adapter_dim):
+        super(Adapter, self).__init__()
+        self.down_project = nn.Linear(input_dim, adapter_dim)
+        self.activation = nn.ReLU()
+        self.up_project = nn.Linear(adapter_dim, input_dim)
+        self.init_weights()  # Initialize weights
+
+    def init_weights(self):
+        init.kaiming_uniform_(self.down_project.weight, a=math.sqrt(5))
+        init.zeros_(self.down_project.bias)
+        init.kaiming_uniform_(self.up_project.weight, a=math.sqrt(5))
+        init.zeros_(self.up_project.bias)
+
+    def forward(self, x):
+        down = self.down_project(x)
+        activated = self.activation(down)
+        up = self.up_project(activated)
+        return up + x  # Add residual connection
+
+class BertOutputWithAdapter(nn.Module):
+    def __init__(self, config, adapter_dim=64):
+        super().__init__()
+        self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
+        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
+        self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        self.adapter = Adapter(config.hidden_size, adapter_dim)
+        self.init_weights()  # Initialize weights
+
+    def init_weights(self):
+        init.kaiming_uniform_(self.dense.weight, a=math.sqrt(5))
+        init.zeros_(self.dense.bias)
+
+    def forward(self, hidden_states, input_tensor):
+        hidden_states = self.dense(hidden_states)
+        hidden_states = self.dropout(hidden_states)
+        hidden_states = self.LayerNorm(hidden_states + input_tensor)
+        hidden_states = self.adapter(hidden_states)  # Apply adapter
+        return hidden_states
+
         
 class BLIP_Decoder(nn.Module):
     def __init__(self,                 
@@ -89,6 +131,7 @@ class BLIP_Decoder(nn.Module):
                  vit_grad_ckpt = False,
                  vit_ckpt_layer = 0,
                  prompt = 'a picture of ',
+                 adapter_dim=64,
                  ):
         """
         Args:
@@ -125,9 +168,8 @@ class BLIP_Decoder(nn.Module):
         for param in self.text_decoder.parameters():
             param.requires_grad = False
 
-        adapter_config = AdapterConfig.load("pfeiffer")
-        self.text_decoder.add_adapter("student_adapter", config=adapter_config)
-        self.text_decoder.train_adapter("student_adapter")
+        self.adapter = Adapter(med_config.hidden_size, adapter_dim)
+        self.text_decoder.bert.encoder.layer[-1].output = BertOutputWithAdapter(med_config, adapter_dim)
   
     def forward(self, image, caption):
         
@@ -165,7 +207,7 @@ class BLIP_Decoder(nn.Module):
         total_loss = loss_lm + semantic_similarity_loss + f1_score_loss + kl_loss
                         
         return total_loss
-    
+
     def convert_image_to_text(self, image):
         prompt = "USER: <image>\nPlease describe this image.\nASSISTANT:"
         outputs = self.pipe_image_to_text(image, prompt=prompt, generate_kwargs={"max_new_tokens": 200})
@@ -310,7 +352,10 @@ def blip_decoder(pretrained='',**kwargs):
     model = BLIP_Decoder(**kwargs)
     if pretrained:
         model,msg = load_checkpoint(model,pretrained)
-        assert(len(msg.missing_keys)==0)
+        if len(msg.missing_keys) > 0:
+            print(f"Missing keys: {msg.missing_keys}")
+        #assert(len(msg.missing_keys)==0)
+        print_trainable_parameters(model)
     return model    
     
 def blip_feature_extractor(pretrained='',**kwargs):
@@ -373,3 +418,9 @@ def load_checkpoint(model,url_or_filename):
     print('load checkpoint from %s'%url_or_filename)  
     return model,msg
     
+def print_trainable_parameters(model):
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            print(f"Trainable: {name}")
+        else:
+            print(f"Frozen: {name}")
