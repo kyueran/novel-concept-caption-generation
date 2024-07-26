@@ -26,7 +26,7 @@ from torch.utils.tensorboard import SummaryWriter
 from models.blip_adapter import blip_decoder
 import utils
 from utils import cosine_lr_schedule
-from data import create_dataset, create_sampler, create_loader
+from data import create_distillation_dataset, create_sampler, create_loader
 from data.utils import save_result, flickr30k_caption_eval
 
 def train(model, data_loader, optimizer, epoch, device, writer):
@@ -98,7 +98,7 @@ def main(args, config):
 
     #### Dataset #### 
     print("Creating captioning dataset")
-    train_dataset, val_dataset, test_dataset = create_dataset('caption_flickr30k', config)  
+    train_dataset, val_dataset, test_dataset = create_distillation_dataset('caption_flickr30k', config)  
 
     if args.distributed:
         num_tasks = utils.get_world_size()
@@ -194,7 +194,7 @@ def main(args, config):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default='./configs/caption_flickr30k.yaml')
+    parser.add_argument('--config', default='./configs/distil_flickr30k.yaml')
     parser.add_argument('--output_dir', default='output/caption_flickr30k_butd_distil')        
     parser.add_argument('--evaluate', action='store_true')    
     parser.add_argument('--device', default='cuda')

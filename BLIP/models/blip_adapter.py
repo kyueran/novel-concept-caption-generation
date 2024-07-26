@@ -11,7 +11,6 @@ warnings.filterwarnings("ignore")
 from models.vit import VisionTransformer, interpolate_pos_embed
 from models.med import BertConfig, BertModel, BertLMHeadModel
 from transformers import BertTokenizer, BitsAndBytesConfig, pipeline
-from adapters import AdapterConfig
 from sentence_transformers import SentenceTransformer, util
 
 import torch
@@ -25,6 +24,9 @@ from urllib.parse import urlparse
 from timm.models.hub import download_cached_file
 import spacy
 from nltk.corpus import wordnet as wn
+
+from PIL import Image
+import torchvision.transforms as transforms
 
 nlp = spacy.load("en_core_web_sm")
     
@@ -145,7 +147,8 @@ class BLIP_Decoder(nn.Module):
         self.tokenizer = init_tokenizer()   
         med_config = BertConfig.from_json_file(med_config)
         med_config.encoder_width = vision_width
-        self.text_decoder = BertLMHeadModel(config=med_config)    
+        self.text_decoder = BertLMHeadModel(config=med_config)
+        self.device = 'cuda'  
         
         self.prompt = prompt
         self.prompt_length = len(self.tokenizer(self.prompt).input_ids)-1
@@ -160,16 +163,20 @@ class BLIP_Decoder(nn.Module):
         
         self.semantic_model = SentenceTransformer('paraphrase-MiniLM-L6-v2')
 
-        self.summarizer = pipeline("summarization", model="t5-small", tokenizer="t5-small")
+        #self.summarizer = pipeline("summarization", model="t5-small", tokenizer="t5-small")
         
         # Freeze BLIP model weights
         for param in self.visual_encoder.parameters():
             param.requires_grad = False
         for param in self.text_decoder.parameters():
             param.requires_grad = False
+        for param in self.semantic_model.parameters():
+            param.requires_grad = False
 
         self.adapter = Adapter(med_config.hidden_size, adapter_dim)
         self.text_decoder.bert.encoder.layer[-1].output = BertOutputWithAdapter(med_config, adapter_dim)
+
+        self.transform = transforms.ToPILImage()
   
     def forward(self, image, caption):
         
@@ -192,50 +199,80 @@ class BLIP_Decoder(nn.Module):
                                           )   
         
 
-        teacher_caption = self.convert_image_to_text(image)
+        teacher_caption_objects = self.teacher_caption_objects(image)
+
+        teacher_caption_desc = self.teacher_caption_desc(image)
+
+        print("OBJECTS: ", teacher_caption_objects)
+
+        print("DESC: ", teacher_caption_desc)
         
         student_caption = self.generate(image)
         
         loss_lm = decoder_output.loss
 
-        semantic_similarity_loss = self.compute_semantic_similarity_loss(student_caption, teacher_caption)
+        object_matching_loss = self.compute_f1_score_loss(student_caption, teacher_caption_objects)
+
+        semantic_similarity_loss = self.compute_semantic_similarity_loss(student_caption, teacher_caption_desc)
         
-        f1_score_loss = self.compute_f1_score_loss(student_caption, teacher_caption)
+        kl_loss = self.compute_kl_loss(image, student_caption, teacher_caption_desc)
         
-        kl_loss = self.compute_kl_loss(student_caption, teacher_caption)
-        
-        total_loss = loss_lm + semantic_similarity_loss + f1_score_loss + kl_loss
+        total_loss = loss_lm + object_matching_loss + semantic_similarity_loss + kl_loss
                         
         return total_loss
 
-    def convert_image_to_text(self, image):
-        prompt = "USER: <image>\nPlease describe this image.\nASSISTANT:"
-        outputs = self.pipe_image_to_text(image, prompt=prompt, generate_kwargs={"max_new_tokens": 200})
-        response = outputs[0]["generated_text"]
-        # Extract text after "ASSISTANT:"
-        assistant_index = response.find("ASSISTANT:")
-        if assistant_index != -1:
-            response = response[assistant_index + len("ASSISTANT:"):].strip()
-        return response
+    def teacher_caption_desc(self, image):
+        # Convert each image in the batch to PIL format
+        pil_images = [self.transform(img) for img in image]
+        prompt = "USER: <image>\nPlease describe the image briefly.\nASSISTANT:"
+        responses = [self.pipe_image_to_text(img, prompt=prompt, generate_kwargs={"max_new_tokens": 200})[0]["generated_text"] for img in pil_images]
+        teacher_captions = []
+        for response in responses:
+            assistant_index = response.find("ASSISTANT:")
+            if assistant_index != -1:
+                response = response[assistant_index + len("ASSISTANT:"):].strip()
+            teacher_captions.append(response)
+        return teacher_captions
+    
+    def teacher_caption_objects(self, image):
+        # Convert each image in the batch to PIL format
+        pil_images = [self.transform(img) for img in image]
+        prompt = "USER: <image>\nWhat are the objects present in the image.\nASSISTANT:"
+        responses = [self.pipe_image_to_text(img, prompt=prompt, generate_kwargs={"max_new_tokens": 200})[0]["generated_text"] for img in pil_images]
+        teacher_captions = []
+        for response in responses:
+            assistant_index = response.find("ASSISTANT:")
+            if assistant_index != -1:
+                response = response[assistant_index + len("ASSISTANT:"):].strip()
+            teacher_captions.append(response)
+        return teacher_captions
     
     def compute_semantic_similarity_loss(self, student_caption, teacher_caption):
         student_embeddings = self.semantic_model.encode(student_caption, convert_to_tensor=True)
         teacher_embeddings = self.semantic_model.encode(teacher_caption, convert_to_tensor=True)
-
-        semantic_similarity_loss = 1 - util.pytorch_cos_sim(student_embeddings, teacher_embeddings).item()
+        
+        similarity_matrix = util.pytorch_cos_sim(student_embeddings, teacher_embeddings)
+        diagonal_similarities = similarity_matrix.diag().tolist()
+        average_similarity = sum(diagonal_similarities) / len(diagonal_similarities)
+        semantic_similarity_loss = 1 - average_similarity
         return semantic_similarity_loss
     
+    '''
     def summarize(self, caption):
         summary = self.summarizer(caption, max_length=50, do_sample=False)
         summarized = summary[0]['summary_text']
         return summarized
-    
+    '''
+
     def extract_objects_features(self, text):
         doc = nlp(text)
         objects_features = set()
         for token in doc:
             if token.pos_ in {'NOUN'}:
                 objects_features.add(token.lemma_.lower())
+
+        objects_features.discard('object')
+        objects_features.discard('image')
         return objects_features
     
     def create_synonym_dict(self, objects_features):
@@ -257,7 +294,7 @@ class BLIP_Decoder(nn.Module):
                     break
         return matched_objects
 
-    def calculate_precision_recall_f1(set1, set2, matched_objects):
+    def calculate_precision_recall_f1(self, set1, set2, matched_objects):
         true_positives = len(matched_objects)
         possible_positives = len(set1)
         predicted_positives = len(set2)
@@ -268,20 +305,28 @@ class BLIP_Decoder(nn.Module):
 
         return precision, recall, f1
 
-    def compute_f1_score_loss(self, student_caption, teacher_caption):
-        teacher_caption = self.summarize(teacher_caption)
-        objects_features_student = self.extract_objects_features(student_caption)
-        objects_features_teacher = self.extract_objects_features(teacher_caption)
-        
-        synonym_dict_teacher = self.create_synonym_dict(objects_features_teacher)
-        
-        matched_objects = self.match_with_synonyms(objects_features_student, synonym_dict_teacher)
-        
-        _, _, f1_score = self.calculate_precision_recall_f1(objects_features_student, objects_features_teacher, matched_objects)
-        f1_score_loss = 1 - f1_score  # Loss should decrease as F1 score increases
-        return f1_score_loss
+    def compute_f1_score_loss(self, student_captions, teacher_captions):
 
-    def compute_kl_loss(self, student_caption, teacher_caption):
+        assert(len(student_captions) == len(teacher_captions))
+
+        list_of_f1_scores = []
+        for i in range(len(student_captions)):
+            teacher_caption = teacher_captions[i]
+            student_caption = student_captions[i]
+            objects_features_student = self.extract_objects_features(student_caption)
+            objects_features_teacher = self.extract_objects_features(teacher_caption)
+            
+            synonym_dict_teacher = self.create_synonym_dict(objects_features_teacher)
+            
+            matched_objects = self.match_with_synonyms(objects_features_student, synonym_dict_teacher)
+            
+            _, _, f1_score = self.calculate_precision_recall_f1(objects_features_student, objects_features_teacher, matched_objects)
+            list_of_f1_scores.append(f1_score)
+        
+        mean_f1_score = sum(list_of_f1_scores) / len(list_of_f1_scores)
+        return 1 - mean_f1_score
+
+    def compute_kl_loss(self, image, student_caption, teacher_caption):
         # Tokenize the captions using the shared tokenizer
         student_ids = self.tokenizer(student_caption, return_tensors="pt", padding=True, truncation=True).input_ids
         teacher_ids = self.tokenizer(teacher_caption, return_tensors="pt", padding=True, truncation=True).input_ids
@@ -289,22 +334,40 @@ class BLIP_Decoder(nn.Module):
         # Move token ids to the appropriate device
         student_ids = student_ids.to(self.device)
         teacher_ids = teacher_ids.to(self.device)
-
+        
         # Compute the logits (probability distributions) from the decoder
-        student_logits = self.text_decoder(student_ids).logits
-        teacher_logits = self.text_decoder(teacher_ids).logits
-
-        # Convert logits to log-probabilities
+        image_embeds = self.visual_encoder(image)
+        image_atts = torch.ones(image_embeds.size()[:-1], dtype=torch.long).to(image.device)
+        model_kwargs = {"encoder_hidden_states": image_embeds, "encoder_attention_mask": image_atts}
+        
+        student_logits = self.text_decoder(student_ids, **model_kwargs).logits
+        teacher_logits = self.text_decoder(teacher_ids, **model_kwargs).logits
+        
+        # Determine the maximum length
+        max_length = max(student_logits.size(1), teacher_logits.size(1))
+        
+        # Pad student logits to match teacher's length if necessary
+        if student_logits.size(1) < max_length:
+            pad_size = max_length - student_logits.size(1)
+            padding = torch.zeros((student_logits.size(0), pad_size, student_logits.size(2)), device=student_logits.device)
+            student_logits = torch.cat([student_logits, padding], dim=1)
+        
+        # Ensure the logits tensors match in size
+        student_logits = student_logits[:, :max_length, :]
+        teacher_logits = teacher_logits[:, :max_length, :]
+        
+        # Convert logits to log-probabilities and probabilities
         student_log_probs = F.log_softmax(student_logits, dim=-1)
         teacher_probs = F.softmax(teacher_logits, dim=-1)
-
+        
         # Compute the KL divergence
         kl_loss_fn = nn.KLDivLoss(reduction='batchmean')
         kl_loss = kl_loss_fn(student_log_probs, teacher_probs)
-
+        
         return kl_loss
 
-    def generate(self, image, sample=False, num_beams=3, max_length=30, min_length=10, top_p=0.9, repetition_penalty=1.0):
+
+    def generate(self, image, sample=False, num_beams=1, max_length=30, min_length=10, top_p=0.9, repetition_penalty=1.0):
         image_embeds = self.visual_encoder(image)
 
         if not sample:
