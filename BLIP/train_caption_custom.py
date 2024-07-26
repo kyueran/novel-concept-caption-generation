@@ -29,6 +29,13 @@ from utils import cosine_lr_schedule
 from data import create_dataset, create_sampler, create_loader
 from data.utils import save_result, flickr30k_caption_eval
 
+def set_seed(seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    cudnn.deterministic = True
+    cudnn.benchmark = False
+
 def train(model, data_loader, optimizer, epoch, device, writer):
     # train
     model.train()  
@@ -60,7 +67,10 @@ def train(model, data_loader, optimizer, epoch, device, writer):
 
 
 @torch.no_grad()
-def evaluate(model, data_loader, device, config):
+def evaluate(model, data_loader, device, config, args):
+
+    seed = args.seed + utils.get_rank()
+    set_seed(seed)
     # evaluate
     model.eval() 
     
@@ -89,10 +99,7 @@ def main(args, config):
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    cudnn.benchmark = True
+    set_seed(seed)
 
     writer = SummaryWriter(log_dir=args.output_dir)
 
@@ -140,10 +147,10 @@ def main(args, config):
                 
             train_stats = train(model, train_loader, optimizer, epoch, device, writer) 
         
-        val_result = evaluate(model_without_ddp, val_loader, device, config)  
+        val_result = evaluate(model_without_ddp, val_loader, device, config, args)  
         val_result_file = save_result(val_result, args.result_dir, 'val_epoch%d'%epoch, remove_duplicate='image_id')        
   
-        test_result = evaluate(model_without_ddp, test_loader, device, config)  
+        test_result = evaluate(model_without_ddp, test_loader, device, config, args)  
         test_result_file = save_result(test_result, args.result_dir, 'test_epoch%d'%epoch, remove_duplicate='image_id')  
 
         if utils.is_main_process():   
@@ -198,7 +205,7 @@ if __name__ == '__main__':
     parser.add_argument('--output_dir', default='output/caption_flickr30k_human')        
     parser.add_argument('--evaluate', action='store_true')    
     parser.add_argument('--device', default='cuda')
-    parser.add_argument('--seed', default=42, type=int)
+    parser.add_argument('--seed', default=9, type=int)
     parser.add_argument('--world_size', default=1, type=int, help='number of distributed processes')    
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
     parser.add_argument('--distributed', default=True, type=bool)

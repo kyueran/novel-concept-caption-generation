@@ -149,6 +149,7 @@ class BLIP_Decoder(nn.Module):
         med_config.encoder_width = vision_width
         self.text_decoder = BertLMHeadModel(config=med_config)
         self.device = 'cuda'  
+        self.kl_loss_weight = 0.01
         
         self.prompt = prompt
         self.prompt_length = len(self.tokenizer(self.prompt).input_ids)-1
@@ -203,22 +204,23 @@ class BLIP_Decoder(nn.Module):
 
         teacher_caption_desc = self.teacher_caption_desc(image)
 
-        print("OBJECTS: ", teacher_caption_objects)
-
-        print("DESC: ", teacher_caption_desc)
-        
         student_caption = self.generate(image)
         
         loss_lm = decoder_output.loss
 
-        object_matching_loss = self.compute_f1_score_loss(student_caption, teacher_caption_objects)
+        object_matching_loss = torch.tensor(self.compute_f1_score_loss(student_caption, teacher_caption_objects), requires_grad=True).to(self.device)
 
-        semantic_similarity_loss = self.compute_semantic_similarity_loss(student_caption, teacher_caption_desc)
+        semantic_similarity_loss = torch.tensor(self.compute_semantic_similarity_loss(student_caption, teacher_caption_desc), requires_grad=True).to(self.device)
         
         kl_loss = self.compute_kl_loss(image, student_caption, teacher_caption_desc)
         
-        total_loss = loss_lm + object_matching_loss + semantic_similarity_loss + kl_loss
-                        
+        total_loss = loss_lm + object_matching_loss + semantic_similarity_loss + self.kl_loss_weight * kl_loss
+        
+        print("LM LOSS: ", loss_lm)
+        print("OM LOSS: ", object_matching_loss)
+        print("SM LOSS: ", semantic_similarity_loss)
+        print("KL LOSS: ", kl_loss)
+        print("Total LOSS ", total_loss)
         return total_loss
 
     def teacher_caption_desc(self, image):
