@@ -14,6 +14,10 @@ import time
 import datetime
 import json
 from pathlib import Path
+from PIL import Image
+from torchvision import transforms
+from transformers import BitsAndBytesConfig, pipeline
+from datasets import Dataset, DatasetDict
 
 import torch
 import torch.nn as nn
@@ -28,6 +32,13 @@ import utils
 from utils import cosine_lr_schedule
 from data import create_distillation_dataset, create_sampler, create_loader
 from data.utils import save_result, flickr30k_caption_eval
+
+def set_seed(seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    cudnn.deterministic = True
+    cudnn.benchmark = False
 
 def train(model, data_loader, optimizer, epoch, device, writer):
     # train
@@ -60,39 +71,56 @@ def train(model, data_loader, optimizer, epoch, device, writer):
 
 
 @torch.no_grad()
-def evaluate(model, data_loader, device, config):
-    # evaluate
-    model.eval() 
-    
+def evaluate(pipe_image_to_text, data_loader, device, config):
+    # evaluate    
+    set_seed(9)
+
     metric_logger = utils.MetricLogger(delimiter="  ")
     header = 'Caption generation:'
     print_freq = 10
 
     result = []
-    for image, image_id in metric_logger.log_every(data_loader, print_freq, header): 
+    for images, image_ids in metric_logger.log_every(data_loader, print_freq, header): 
+        pil_images = []
+        for img in images:
+            pil_images.append(transforms.ToPILImage()(torch.tensor(img)))
         
-        image = image.to(device)       
-        
-        captions = model.generate(image, sample=False, num_beams=config['num_beams'], max_length=config['max_length'], 
-                                  min_length=config['min_length'])
-        
-        for caption, img_id in zip(captions, image_id):
+        prompt = "USER: <image>\nPlease describe the image briefly.\nASSISTANT:"
+        captions = pipe_image_to_text(pil_images, prompt=prompt, generate_kwargs={"max_new_tokens": 50}, batch_size=config['batch_size'])
+
+        for caption, img_id in zip(captions, image_ids):
+            caption = caption[0]['generated_text']
+            assistant_index = caption.find("ASSISTANT:")
+            if assistant_index != -1:
+                caption = caption[assistant_index + len("ASSISTANT:"):].strip()
             result.append({"image_id": img_id.item(), "caption": caption})
   
     return result
 
-
-def main(args, config):
-    utils.init_distributed_mode(args)    
+def save_result_simple(result, output_dir):
+    """
+    Save the result of the evaluation to a JSON file.
     
+    Args:
+        result (list): List of dictionaries containing image_id and caption.
+        output_dir (str): Directory where the result file will be saved.
+        
+    Returns:
+        str: Path to the saved result file.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    result_file = os.path.join(output_dir, f"results.json")
+    
+    with open(result_file, 'w') as f:
+        json.dump(result, f, indent=4)
+    
+    return result_file
+
+def main(args, config):    
     device = torch.device(args.device)
 
     # fix the seed for reproducibility
-    seed = args.seed + utils.get_rank()
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    cudnn.benchmark = True
+    set_seed(9)
 
     writer = SummaryWriter(log_dir=args.output_dir)
 
@@ -100,12 +128,7 @@ def main(args, config):
     print("Creating captioning dataset")
     train_dataset, val_dataset, test_dataset = create_distillation_dataset('caption_flickr30k', config)  
 
-    if args.distributed:
-        num_tasks = utils.get_world_size()
-        global_rank = utils.get_rank()            
-        samplers = create_sampler([train_dataset,val_dataset,test_dataset], [True,False,False], num_tasks, global_rank)         
-    else:
-        samplers = [None, None, None]
+    samplers = [None, None, None]
     
     train_loader, val_loader, test_loader = create_loader([train_dataset, val_dataset, test_dataset],samplers,
                                                           batch_size=[config['batch_size']]*3,num_workers=[4,4,4],
@@ -113,6 +136,14 @@ def main(args, config):
 
     #### Model #### 
     print("Creating model")
+    quantization_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16
+        )
+    pipe_image_to_text = pipeline("image-to-text", 
+                                        model="llava-hf/llava-v1.6-mistral-7b-hf", 
+                                        model_kwargs={"quantization_config": quantization_config})
+
     model = blip_decoder(pretrained=config['pretrained'], image_size=config['image_size'], vit=config['vit'], 
                            vit_grad_ckpt=config['vit_grad_ckpt'], vit_ckpt_layer=config['vit_ckpt_layer'], 
                            prompt=config['prompt'])
@@ -120,9 +151,6 @@ def main(args, config):
     model = model.to(device)   
     
     model_without_ddp = model
-    if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
-        model_without_ddp = model.module    
     
     optimizer = torch.optim.AdamW(params=model.parameters(), lr=config['init_lr'], weight_decay=config['weight_decay'])
             
@@ -131,59 +159,36 @@ def main(args, config):
 
     print("Start training")
     start_time = time.time()    
-    for epoch in range(0, config['max_epoch']):
-        if not args.evaluate:        
-            if args.distributed:
-                train_loader.sampler.set_epoch(epoch)
-                
-            cosine_lr_schedule(optimizer, epoch, config['max_epoch'], config['init_lr'], config['min_lr'])
-                
-            train_stats = train(model, train_loader, optimizer, epoch, device, writer) 
+    for epoch in range(0, config['max_epoch']):      
+        test_result = evaluate(pipe_image_to_text, test_loader, device, config)  
+        test_result_file = save_result_simple(test_result, args.result_dir)  
+
+        coco_test = flickr30k_caption_eval(config['coco_gt_root'],test_result_file,'test')
         
-        val_result = evaluate(model_without_ddp, val_loader, device, config)  
-        val_result_file = save_result(val_result, args.result_dir, 'val_epoch%d'%epoch, remove_duplicate='image_id')        
-  
-        test_result = evaluate(model_without_ddp, test_loader, device, config)  
-        test_result_file = save_result(test_result, args.result_dir, 'test_epoch%d'%epoch, remove_duplicate='image_id')  
+        if args.evaluate:            
+            log_stats = {**{f'test_{k}': v for k, v in coco_test.eval.items()}, 
+                         'score': coco_test.eval['CIDEr'] + coco_test.eval['Bleu_4'],                      
+                        }
+            with open(os.path.join(args.output_dir, "evaluate.txt"),"a") as f:
+                f.write(json.dumps(log_stats) + "\n")                   
+        else:             
+            save_obj = {
+                'model': model_without_ddp.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'config': config,
+                'epoch': epoch,
+            }
 
-        if utils.is_main_process():   
-            coco_val = flickr30k_caption_eval(config['coco_gt_root'],val_result_file,'val')
-            coco_test = flickr30k_caption_eval(config['coco_gt_root'],test_result_file,'test')
-            
-            if args.evaluate:            
-                log_stats = {**{f'val_{k}': v for k, v in coco_val.eval.items()},
-                             **{f'test_{k}': v for k, v in coco_test.eval.items()},                       
-                            }
-                with open(os.path.join(args.output_dir, "evaluate.txt"),"a") as f:
-                    f.write(json.dumps(log_stats) + "\n")                   
-            else:             
-                save_obj = {
-                    'model': model_without_ddp.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'config': config,
-                    'epoch': epoch,
-                }
-
-                if coco_val.eval['CIDEr'] + coco_val.eval['Bleu_4'] > best:
-                    best = coco_val.eval['CIDEr'] + coco_val.eval['Bleu_4']
-                    best_epoch = epoch                
-                    torch.save(save_obj, os.path.join(args.output_dir, 'checkpoint_best.pth')) 
-                    
-                torch.save(save_obj, os.path.join(args.output_dir, f'epoch-{epoch}.pth')) 
-                
-                log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
-                             **{f'val_{k}': v for k, v in coco_val.eval.items()},
-                             **{f'test_{k}': v for k, v in coco_test.eval.items()},                       
-                             'epoch': epoch,
-                             'best_score': best,
-                             'best_epoch': best_epoch,
-                            }
-                with open(os.path.join(args.output_dir, "log.txt"),"a") as f:
-                    f.write(json.dumps(log_stats) + "\n")     
+            log_stats = {**{f'test_{k}': v for k, v in coco_test.eval.items()},                       
+                            'epoch': epoch,
+                            'best_score': best,
+                            'best_epoch': best_epoch,
+                        }
+            with open(os.path.join(args.output_dir, "log.txt"),"a") as f:
+                f.write(json.dumps(log_stats) + "\n")     
                     
         if args.evaluate: 
             break
-        dist.barrier()     
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -193,14 +198,11 @@ def main(args, config):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default='./configs/distil_flickr30k.yaml')
-    parser.add_argument('--output_dir', default='output/caption_flickr30k_butd_distil_round2_direct')        
+    parser.add_argument('--config', default='./configs/analyse_flickr30k.yaml')
+    parser.add_argument('--output_dir', default='output/analyse_test_llava')        
     parser.add_argument('--evaluate', action='store_true')    
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--seed', default=9, type=int)
-    parser.add_argument('--world_size', default=1, type=int, help='number of distributed processes')    
-    parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
-    parser.add_argument('--distributed', default=True, type=bool)
     args = parser.parse_args()
 
     config = yaml.load(open(args.config, 'r'), Loader=yaml.Loader)

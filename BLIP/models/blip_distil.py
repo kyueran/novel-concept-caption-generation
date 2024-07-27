@@ -179,9 +179,11 @@ class BLIP_Decoder(nn.Module):
         # Convert each image in the batch to PIL format
         pil_images = [self.transform(img) for img in image]
         prompt = "USER: <image>\nPlease describe the image briefly.\nASSISTANT:"
-        responses = [self.pipe_image_to_text(img, prompt=prompt, generate_kwargs={"max_new_tokens": 200})[0]["generated_text"] for img in pil_images]
+        responses = self.pipe_image_to_text(pil_images, prompt=prompt, generate_kwargs={"max_new_tokens": 200}, batch_size=len(pil_images))
+
         teacher_captions = []
         for response in responses:
+            response = response[0]['generated_text']
             assistant_index = response.find("ASSISTANT:")
             if assistant_index != -1:
                 response = response[assistant_index + len("ASSISTANT:"):].strip()
@@ -192,9 +194,11 @@ class BLIP_Decoder(nn.Module):
         # Convert each image in the batch to PIL format
         pil_images = [self.transform(img) for img in image]
         prompt = "USER: <image>\nWhat are the objects present in the image.\nASSISTANT:"
-        responses = [self.pipe_image_to_text(img, prompt=prompt, generate_kwargs={"max_new_tokens": 200})[0]["generated_text"] for img in pil_images]
+        responses = self.pipe_image_to_text(pil_images, prompt=prompt, generate_kwargs={"max_new_tokens": 200}, batch_size=len(pil_images))
+
         teacher_captions = []
         for response in responses:
+            response = response[0]['generated_text']
             assistant_index = response.find("ASSISTANT:")
             if assistant_index != -1:
                 response = response[assistant_index + len("ASSISTANT:"):].strip()
