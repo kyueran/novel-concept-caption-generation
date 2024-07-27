@@ -23,7 +23,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 
-from models.blip_adapter import blip_decoder
+from models.blip_distil import blip_decoder
 import utils
 from utils import cosine_lr_schedule
 from data import create_distillation_dataset, create_sampler, create_loader
@@ -121,7 +121,7 @@ def main(args, config):
     
     model_without_ddp = model
     if args.distributed:
-        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu], find_unused_parameters=True)
+        model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module    
     
     optimizer = torch.optim.AdamW(params=model.parameters(), lr=config['init_lr'], weight_decay=config['weight_decay'])
@@ -169,8 +169,7 @@ def main(args, config):
                     best_epoch = epoch                
                     torch.save(save_obj, os.path.join(args.output_dir, 'checkpoint_best.pth')) 
                     
-                if epoch % 10 == 0:
-                    torch.save(save_obj, os.path.join(args.output_dir, f'epoch-{epoch}.pth')) 
+                torch.save(save_obj, os.path.join(args.output_dir, f'epoch-{epoch}.pth')) 
                 
                 log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                              **{f'val_{k}': v for k, v in coco_val.eval.items()},
@@ -195,7 +194,7 @@ def main(args, config):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='./configs/distil_flickr30k.yaml')
-    parser.add_argument('--output_dir', default='output/caption_flickr30k_butd_distil')        
+    parser.add_argument('--output_dir', default='output/caption_flickr30k_butd_distil_direct')        
     parser.add_argument('--evaluate', action='store_true')    
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--seed', default=9, type=int)

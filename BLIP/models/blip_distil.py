@@ -82,47 +82,6 @@ class BLIP_Base(nn.Module):
                                        return_dict = True,
                                       )              
             return output.last_hidden_state
-        
-
-class Adapter(nn.Module):
-    def __init__(self, input_dim, adapter_dim):
-        super(Adapter, self).__init__()
-        self.down_project = nn.Linear(input_dim, adapter_dim)
-        self.activation = nn.ReLU()
-        self.up_project = nn.Linear(adapter_dim, input_dim)
-        self.init_weights()  # Initialize weights
-
-    def init_weights(self):
-        init.kaiming_uniform_(self.down_project.weight, a=math.sqrt(5))
-        init.zeros_(self.down_project.bias)
-        init.kaiming_uniform_(self.up_project.weight, a=math.sqrt(5))
-        init.zeros_(self.up_project.bias)
-
-    def forward(self, x):
-        down = self.down_project(x)
-        activated = self.activation(down)
-        up = self.up_project(activated)
-        return up + x  # Add residual connection
-
-class BertOutputWithAdapter(nn.Module):
-    def __init__(self, config, adapter_dim=64):
-        super().__init__()
-        self.dense = nn.Linear(config.intermediate_size, config.hidden_size)
-        self.LayerNorm = nn.LayerNorm(config.hidden_size, eps=config.layer_norm_eps)
-        self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        self.adapter = Adapter(config.hidden_size, adapter_dim)
-        self.init_weights()  # Initialize weights
-
-    def init_weights(self):
-        init.kaiming_uniform_(self.dense.weight, a=math.sqrt(5))
-        init.zeros_(self.dense.bias)
-
-    def forward(self, hidden_states, input_tensor):
-        hidden_states = self.dense(hidden_states)
-        hidden_states = self.dropout(hidden_states)
-        hidden_states = self.LayerNorm(hidden_states + input_tensor)
-        hidden_states = self.adapter(hidden_states)  # Apply adapter
-        return hidden_states
 
         
 class BLIP_Decoder(nn.Module):
@@ -167,15 +126,8 @@ class BLIP_Decoder(nn.Module):
         #self.summarizer = pipeline("summarization", model="t5-small", tokenizer="t5-small")
         
         # Freeze BLIP model weights
-        for param in self.visual_encoder.parameters():
-            param.requires_grad = False
-        for param in self.text_decoder.parameters():
-            param.requires_grad = False
         for param in self.semantic_model.parameters():
             param.requires_grad = False
-
-        self.adapter = Adapter(med_config.hidden_size, adapter_dim)
-        self.text_decoder.bert.encoder.layer[-1].output = BertOutputWithAdapter(med_config, adapter_dim)
 
         self.transform = transforms.ToPILImage()
   

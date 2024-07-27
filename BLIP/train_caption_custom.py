@@ -202,7 +202,7 @@ def main(args, config):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='./configs/caption_flickr30k.yaml')
-    parser.add_argument('--output_dir', default='output/caption_flickr30k_human')        
+    parser.add_argument('--output_dir', default='output/caption_flickr30k_butd_round2')        
     parser.add_argument('--evaluate', action='store_true')    
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--seed', default=9, type=int)
