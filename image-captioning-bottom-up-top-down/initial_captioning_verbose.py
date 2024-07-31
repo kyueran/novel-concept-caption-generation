@@ -12,6 +12,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed, wait, FIRST_EX
 import logging
 import multiprocessing
 import warnings
+import time
 
 # Ignore all warnings
 warnings.filterwarnings("ignore")
@@ -42,7 +43,7 @@ decoder.eval()
 word_map_file = os.path.join(data_folder, word_map_file)
 with open(word_map_file, 'r') as j:
     word_map = json.load(j)
-rev_word_map = {v: k for k, v in word_map.items()}
+rev_word_map = {v: k for k, v in word_xmap.items()}
 vocab_size = len(word_map)
 
 nlp = spacy.load("en_core_web_sm")
@@ -162,10 +163,15 @@ def process_image(image_features, image_name):
     # Ensure the decoder runs on CPU
     decoder.to("cpu")
     image_features = torch.FloatTensor(image_features).unsqueeze(0).to("cpu")
+    start_time = time.time()  # Start timing
     captions = generate_caption(image_features)
+    end_time = time.time()  # End timing
+
+    elapsed_time = end_time - start_time
+    logger.info(f"Captioning time for image {image_name}: {elapsed_time:.4f} seconds")
     for j, caption in enumerate(captions):
         results.append({"image_name": image_name, "comment_number": j, "comment": caption + "."})
-    return results
+    return results, elapsed_time
 
 
 def get_processed_images(csv_path):
@@ -176,6 +182,7 @@ def get_processed_images(csv_path):
     return set()
 
 def process_batch(image_features_list, image_names, start_index, batch_size, output_csv_path):
+    batch_times = [] 
     while True:
         try:
             logger.info(f"Processing batch starting at index {start_index}")
@@ -191,9 +198,10 @@ def process_batch(image_features_list, image_names, start_index, batch_size, out
                 
                 # Process remaining futures if no exception occurred
                 for future in tqdm(as_completed(futures), total=len(futures), desc="Processing batch"):
-                    batch_results = future.result()
+                    batch_results, elapsed_time = future.result()
                     df_batch = pd.DataFrame(batch_results)
                     df_batch.to_csv(output_csv_path, mode='a', header=False, index=False, sep='|')
+                    batch_times.append(elapsed_time)
             
             logger.info(f"Batch starting at index {start_index} processed successfully")
             break  # Exit the loop if batch processing is successful
@@ -202,6 +210,8 @@ def process_batch(image_features_list, image_names, start_index, batch_size, out
             logger.error(f"Batch processing failed at index {start_index}. Retrying batch. Error: {e}")
             # If an error occurs, shut down all running tasks and retry the batch
             continue
+            
+    return batch_times
 
 def generate_captions_for_images(npy_file_path, output_csv_path, batch_size=32):
     # Load the data initially
@@ -248,7 +258,7 @@ if __name__ == '__main__':
     # Set multiprocessing start method to 'spawn'
     multiprocessing.set_start_method('spawn')
 
-    npy_file_path = '../shared_data/flickr30k_name_features.npy'
-    output_csv_path = '../shared_data/output_captions.csv'
+    npy_file_path = '../shared_data/merlion_1000.npy'
+    output_csv_path = '../shared_data/merlion_captions.csv'
 
     generate_captions_for_images(npy_file_path, output_csv_path)

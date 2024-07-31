@@ -12,6 +12,7 @@ import torch
 import PIL.Image
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing
+import time
 
 def save_image(array, filename):
     array = np.uint8(np.clip(array, 0, 255))
@@ -49,6 +50,7 @@ from detectron2.modeling.postprocessing import detector_postprocess
 from detectron2.modeling.roi_heads.fast_rcnn import FastRCNNOutputLayers, FastRCNNOutputs, fast_rcnn_inference_single_image
 
 def doit(raw_image):
+    start_time = time.time()
     with torch.no_grad():
         raw_height, raw_width = raw_image.shape[:2]
 
@@ -104,12 +106,14 @@ def doit(raw_image):
         instances.attr_scores = max_attr_prob
         instances.attr_classes = max_attr_label
 
-        return instances, roi_features
+        end_time = time.time()  # End timing
+        processing_time = end_time - start_time
+        return instances, roi_features, processing_time
 
 def process_image(image_path, output_image_folder):
     image_name = os.path.basename(image_path)
     im = cv2.imread(image_path)
-    instances, features = doit(im)
+    instances, features, processing_time = doit(im)
 
     # Save visualized image
     pred = instances.to('cpu')
@@ -118,7 +122,7 @@ def process_image(image_path, output_image_folder):
     output_image_path = os.path.join(output_image_folder, image_name)
     save_image(v.get_image()[:, :, ::-1], output_image_path)
 
-    return features.numpy(), image_name
+    return features.numpy(), image_name, processing_time
 
 def load_existing_data(npy_file_path):
     if os.path.exists(npy_file_path):
@@ -143,27 +147,35 @@ def process_images(image_folder, output_npy_path, output_image_folder, batch_siz
     image_features_list = existing_features
     image_names = existing_names
 
+    processing_times = []
+
     for i in range(0, len(image_paths), batch_size):
         batch_paths = image_paths[i:i+batch_size]
+        print(f"Processing batch {i//batch_size + 1}/{(len(image_paths) + batch_size - 1) // batch_size}")
         with ProcessPoolExecutor(max_workers=batch_size) as executor:
             futures = {executor.submit(process_image, image_path, output_image_folder): image_path for image_path in batch_paths if os.path.basename(image_path) not in processed_images}
             for future in tqdm(as_completed(futures), total=len(futures)):
                 try:
-                    features, image_name = future.result()
+                    features, image_name, processing_time = future.result()
                     image_features_list.append(features)
                     image_names.append(image_name)
                     processed_images.add(image_name)
+                    processing_times.append(processing_time)
                 except Exception as e:
                     print(f"Error processing image {futures[future]}: {e}")
 
         save_data_incrementally(output_npy_path, image_features_list, image_names)
+    
+    print(f"Average processing time per image: {np.mean(processing_times)} seconds")
+    print(f"Total processing time: {np.sum(processing_times)} seconds")
 
 if __name__ == '__main__':
     # Set multiprocessing start method to 'spawn'
     multiprocessing.set_start_method('spawn')
 
-    image_folder = '../shared_data/flickr30k/flickr30k_images'  # Folder containing the images
-    output_npy_path = '../shared_data/flickr30k_name_features.npy'  # Path to save the numpy file
-    output_image_folder = '../shared_data/image_extracted_features'  # Folder to save the processed images
+    #image_folder = '/home/kyueran/caption-generation/BLIP/annotation/output'  # Folder containing the images
+    image_folder = '/home/kyueran/caption-generation/BLIP/merlion/'
+    output_npy_path = '../shared_data/merlion.npy'  # Path to save the numpy file
+    output_image_folder = '../shared_data/merlion'  # Folder to save the processed images
 
     process_images(image_folder, output_npy_path, output_image_folder)

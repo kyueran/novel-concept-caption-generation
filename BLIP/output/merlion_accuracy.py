@@ -1,7 +1,7 @@
 import json
 
 # Load the JSON data
-with open('/home/kyueran/caption-generation/BLIP/output/analyse_merlion_pre_distil_0/result/results.json', 'r') as file:
+with open('/home/kyueran/caption-generation/BLIP/output/merlion_side_finetune/result/results.json', 'r') as file:
     data = json.load(file)
 
 # Initialize counters

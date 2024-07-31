@@ -112,10 +112,10 @@ def coco_caption_eval(coco_gt_root, results_file, split):
 
 def flickr30k_caption_eval(flickr30k_gt_root, results_file, split):
     filenames = {
-        'val': 'f30k_human_rand100_val_gt.json',
-        'test': 'f30k_human_rand100_test_gt.json'
-        #'val': 'merlion_val_gt.json',
-        #'test': 'merlion_test_gt.json'
+        #'val': 'f30k_human_rand100_val_gt.json',
+        #'test': 'f30k_human_rand100_test_gt.json'
+        'val': 'merlion_val_gt.json',
+        'test': 'merlion_test_gt.json'
     }    
     
     annotation_file = os.path.join(flickr30k_gt_root, filenames[split])
