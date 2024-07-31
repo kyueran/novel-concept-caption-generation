@@ -29,6 +29,12 @@ from utils import cosine_lr_schedule
 from data import create_distillation_dataset, create_sampler, create_loader
 from data.utils import save_result, flickr30k_caption_eval
 
+def set_seed(seed):
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    cudnn.benchmark = True
+
 def train(model, data_loader, optimizer, epoch, device, writer):
     # train
     model.train()  
@@ -62,6 +68,8 @@ def train(model, data_loader, optimizer, epoch, device, writer):
 @torch.no_grad()
 def evaluate(model, data_loader, device, config):
     # evaluate
+    seed = args.seed + utils.get_rank()
+    set_seed(seed)
     model.eval() 
     
     metric_logger = utils.MetricLogger(delimiter="  ")
@@ -89,10 +97,7 @@ def main(args, config):
 
     # fix the seed for reproducibility
     seed = args.seed + utils.get_rank()
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    cudnn.benchmark = True
+    set_seed(seed)
 
     writer = SummaryWriter(log_dir=args.output_dir)
 
@@ -132,6 +137,11 @@ def main(args, config):
     print("Start training")
     start_time = time.time()    
     for epoch in range(0, config['max_epoch']):
+        epoch_start_time = time.time()
+        if utils.is_main_process():
+            with open(os.path.join(args.output_dir, "log.txt"),"a") as f:
+                f.write(f"Starting to log time\n")
+
         if not args.evaluate:        
             if args.distributed:
                 train_loader.sampler.set_epoch(epoch)
@@ -180,7 +190,16 @@ def main(args, config):
                             }
                 with open(os.path.join(args.output_dir, "log.txt"),"a") as f:
                     f.write(json.dumps(log_stats) + "\n")     
-                    
+
+        epoch_end_time = time.time()  # End timing the epoch
+        epoch_elapsed_time = epoch_end_time - epoch_start_time
+        epoch_elapsed_time_str = str(datetime.timedelta(seconds=int(epoch_elapsed_time)))
+        print(f'Epoch {epoch} time: {epoch_elapsed_time_str}')
+        
+        if utils.is_main_process():
+            with open(os.path.join(args.output_dir, "log.txt"),"a") as f:
+                f.write(f"Epoch {epoch} time: {epoch_elapsed_time_str}\n")
+
         if args.evaluate: 
             break
         dist.barrier()     
@@ -194,7 +213,7 @@ def main(args, config):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='./configs/distil_flickr30k.yaml')
-    parser.add_argument('--output_dir', default='output/caption_flickr30k_butd_distil_round2_direct')        
+    parser.add_argument('--output_dir', default='output/butd_distil_direct_log_kld')        
     parser.add_argument('--evaluate', action='store_true')    
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--seed', default=9, type=int)

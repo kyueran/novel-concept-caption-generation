@@ -302,7 +302,6 @@ class BertIntermediate(nn.Module):
         hidden_states = self.intermediate_act_fn(hidden_states)
         return hidden_states
 
-
 class BertOutput(nn.Module):
     def __init__(self, config):
         super().__init__()

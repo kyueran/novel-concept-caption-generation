@@ -176,8 +176,7 @@ def main(args, config):
                     best_epoch = epoch                
                     torch.save(save_obj, os.path.join(args.output_dir, 'checkpoint_best.pth')) 
                     
-                if epoch % 10 == 0:
-                    torch.save(save_obj, os.path.join(args.output_dir, f'epoch-{epoch}.pth')) 
+                torch.save(save_obj, os.path.join(args.output_dir, f'epoch-{epoch}.pth')) 
                 
                 log_stats = {**{f'train_{k}': v for k, v in train_stats.items()},
                              **{f'val_{k}': v for k, v in coco_val.eval.items()},
@@ -202,7 +201,7 @@ def main(args, config):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='./configs/caption_flickr30k.yaml')
-    parser.add_argument('--output_dir', default='output/caption_flickr30k_butd_round2')        
+    parser.add_argument('--output_dir', default='output/caption_merlion_finetune')        
     parser.add_argument('--evaluate', action='store_true')    
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--seed', default=9, type=int)

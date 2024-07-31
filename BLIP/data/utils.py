@@ -76,7 +76,6 @@ def save_result(result, result_dir, filename, remove_duplicate=''):
     return final_result_file
 
 
-
 from pycocotools.coco import COCO
 from pycocoevalcap.eval import COCOEvalCap
 from torchvision.datasets.utils import download_url
@@ -115,6 +114,8 @@ def flickr30k_caption_eval(flickr30k_gt_root, results_file, split):
     filenames = {
         'val': 'f30k_human_rand100_val_gt.json',
         'test': 'f30k_human_rand100_test_gt.json'
+        #'val': 'merlion_val_gt.json',
+        #'test': 'merlion_test_gt.json'
     }    
     
     annotation_file = os.path.join(flickr30k_gt_root, filenames[split])

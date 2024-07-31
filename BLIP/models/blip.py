@@ -235,4 +235,3 @@ def load_checkpoint(model,url_or_filename):
     msg = model.load_state_dict(state_dict,strict=False)
     print('load checkpoint from %s'%url_or_filename)  
     return model,msg
-    

@@ -15,6 +15,7 @@ class flickr30k_train(Dataset):
         ann_root (string): directory to store the annotation file
         '''        
         filename = 'f30k_butd_rand800_train.json'
+        #filename = 'merlion_train.json'
         
         self.annotation = json.load(open(os.path.join(ann_root,filename),'r'))
         self.transform = transform
@@ -48,6 +49,8 @@ class flickr30k_caption_eval(Dataset):
         filenames = {
             'val': 'f30k_butd_rand100_val.json',
             'test': 'f30k_butd_rand100_test.json'
+            #'val': 'merlion_val.json',
+            #'test': 'merlion_test.json'
         }
                 
         self.annotation = json.load(open(os.path.join(ann_root, filenames[split]), 'r'))

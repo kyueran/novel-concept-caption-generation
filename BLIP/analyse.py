@@ -28,6 +28,9 @@ import utils
 from utils import cosine_lr_schedule
 from data import create_distillation_dataset, create_sampler, create_loader
 from data.utils import save_result, flickr30k_caption_eval
+from torchvision import transforms
+from PIL import Image
+from torchvision.transforms.functional import InterpolationMode
 
 def train(model, data_loader, optimizer, epoch, device, writer):
     # train
@@ -58,9 +61,20 @@ def train(model, data_loader, optimizer, epoch, device, writer):
     print("Averaged stats:", metric_logger.global_avg())     
     return {k: "{:.3f}".format(meter.global_avg) for k, meter in metric_logger.meters.items()}  
 
+def load_demo_image(image_size,device):
+    img_url = '/home/kyueran/caption-generation/BLIP/merlion.jpg' 
+    raw_image = Image.open(img_url).convert('RGB')   
+    
+    transform = transforms.Compose([
+        transforms.Resize((image_size,image_size),interpolation=InterpolationMode.BICUBIC),
+        transforms.ToTensor(),
+        transforms.Normalize((0.48145466, 0.4578275, 0.40821073), (0.26862954, 0.26130258, 0.27577711))
+        ]) 
+    image = transform(raw_image).unsqueeze(0).to(device)   
+    return image
 
 @torch.no_grad()
-def evaluate(model, data_loader, device, config):
+def evaluate(model, data_loader, device, config, result_dir):
     # evaluate
     model.eval() 
     
@@ -68,11 +82,19 @@ def evaluate(model, data_loader, device, config):
     header = 'Caption generation:'
     print_freq = 10
 
+    images_dir = os.path.join(result_dir, 'images')
+    os.makedirs(images_dir, exist_ok=True)
+
     result = []
     for image, image_id in metric_logger.log_every(data_loader, print_freq, header): 
         
         image = image.to(device)       
         
+        for i in range(len(image)):
+            img = transforms.ToPILImage()(image[i].cpu())
+            image_save_path = os.path.join(images_dir, f"{image_id[i]}.png")
+            img.save(image_save_path)
+
         captions = model.generate(image, sample=False, num_beams=config['num_beams'], max_length=config['max_length'], 
                                   min_length=config['min_length'])
         
@@ -141,13 +163,14 @@ def main(args, config):
     print("Start training")
     start_time = time.time()    
     for epoch in range(0, config['max_epoch']):      
-        test_result = evaluate(model_without_ddp, test_loader, device, config)  
+        test_result = evaluate(model_without_ddp, test_loader, device, config, args.result_dir)  
         test_result_file = save_result_simple(test_result, args.result_dir)  
 
         coco_test = flickr30k_caption_eval(config['coco_gt_root'],test_result_file,'test')
         
         if args.evaluate:            
-            log_stats = {**{f'test_{k}': v for k, v in coco_test.eval.items()},                       
+            log_stats = {**{f'test_{k}': v for k, v in coco_test.eval.items()},
+                         'score': coco_test.eval['CIDEr'] + coco_test.eval['Bleu_4'],
                         }
             with open(os.path.join(args.output_dir, "evaluate.txt"),"a") as f:
                 f.write(json.dumps(log_stats) + "\n")                   
@@ -179,7 +202,7 @@ def main(args, config):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', default='./configs/analyse_flickr30k.yaml')
-    parser.add_argument('--output_dir', default='output/analyse_test_butd_distil_direct')        
+    parser.add_argument('--output_dir', default='output/analyse_merlion_zero_shot')        
     parser.add_argument('--evaluate', action='store_true')    
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--seed', default=9, type=int)
