@@ -1,3 +1,6 @@
 [submodule "py-bottom-up-attention"]
 	path = py-bottom-up-attention
 	url = https://github.com/kyueran/py-bottom-up-attention.git
+[submodule "image-captioning-bottom-up-top-down"]
+	path = image-captioning-bottom-up-top-down
+	url = https://github.com/kyueran/image-captioning-bottom-up-top-down.git
