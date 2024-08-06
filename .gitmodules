@@ -4,3 +4,6 @@
 [submodule "image-captioning-bottom-up-top-down"]
 	path = image-captioning-bottom-up-top-down
 	url = https://github.com/kyueran/image-captioning-bottom-up-top-down.git
+[submodule "BLIP"]
+	path = BLIP
+	url = https://github.com/kyueran/BLIP.git
