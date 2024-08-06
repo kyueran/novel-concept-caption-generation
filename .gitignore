@@ -1,1 +1,5 @@
-*.jpg
+**/*.jpg
+**/*.png
+**/*.json
+**/*.pth
+*.pyc
