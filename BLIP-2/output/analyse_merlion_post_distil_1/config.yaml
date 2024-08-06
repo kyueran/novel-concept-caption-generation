@@ -1,0 +1,5 @@
+{ann_root: /home/kyueran/caption-generation/BLIP/annotation/output, batch_size: 4,
+coco_gt_root: annotation/flickr30k_gt, image_root: /home/kyueran/caption-generation/BLIP/annotation/output,
+image_size: 384, init_lr: 1e-05, max_epoch: 1, max_length: 200, min_length: 20, min_lr: 0,
+num_beams: 1, pretrained: /home/kyueran/caption-generation/BLIP/configs/weights/merlion-distil-1.pth,
+prompt: 'a picture of ', vit: base, vit_ckpt_layer: 0, vit_grad_ckpt: false, weight_decay: 0.05}
